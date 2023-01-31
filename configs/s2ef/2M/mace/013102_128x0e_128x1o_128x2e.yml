@@ -34,8 +34,10 @@ model:
   MLP_irreps: 128x0e
   # atomic_energies: ref energy per atomic number.
   correlation: 3
-  atomic_inter_shift: -0.01030613915
-  atomic_inter_scale: 0.2251
+  # torch.div(energies, natoms).mean()
+  atomic_inter_shift: -0.0106
+  # torch.sqrt(torch.mean(torch.square(forces)))
+  atomic_inter_scale: 0.4263
   # OCP flags.
   regress_forces: True
   otf_graph: True

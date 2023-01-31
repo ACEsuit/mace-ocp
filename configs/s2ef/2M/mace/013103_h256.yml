@@ -30,8 +30,8 @@ model:
   max_ell: 3
   num_interactions: 3
   num_elements: 83
-  hidden_irreps: 128x0e + 128x1o
-  MLP_irreps: 128x0e
+  hidden_irreps: 256x0e + 256x1o
+  MLP_irreps: 256x0e
   # atomic_energies: ref energy per atomic number.
   correlation: 3
   # torch.div(energies, natoms).mean()
@@ -44,8 +44,8 @@ model:
   use_pbc: True
 
 optim:
-  batch_size: 16
-  eval_batch_size: 16
+  batch_size: 4
+  eval_batch_size: 4
   load_balancing: atoms
   eval_every: 1000
   num_workers: 2
