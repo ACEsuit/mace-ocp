@@ -198,8 +198,6 @@ class MACE(BaseModel):
             device=atomic_numbers.device
         ).scatter_(1, atomic_numbers.unsqueeze(1), 1.)
 
-        breakpoint()
-
         node_e0 = self.atomic_energies_fn(atomic_numbers_1hot)
         e0 = scatter_sum(
             src=node_e0, index=data.batch, dim=-1, dim_size=num_graphs
