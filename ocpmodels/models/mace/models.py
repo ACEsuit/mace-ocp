@@ -48,7 +48,7 @@ class MACE(BaseModel):
         # Defaults from OCP / https://github.com/ACEsuit/mace/blob/main/scripts/run_train.py
         gate=torch.nn.functional.silu,
         # per-element energy references currently initialized to 0s.
-        atomic_energies=np.array([0.0 for i in range(83)]),
+        atomic_energies=str,
         interaction_cls=RealAgnosticResidualInteractionBlock,
         interaction_cls_first=AgnosticInteractionBlock,
         max_neighbors: int = 50,
@@ -89,6 +89,10 @@ class MACE(BaseModel):
         )
 
         # Interactions and readout
+        if atomic_energies == "oc20tiny":
+            atomic_energies = np.array([-0.5789446234902406, 0.0, 0.0, 0.0, 0.0, -0.5789446234902277, 0.0, -0.28947231174511384, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.631556987921935, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.631556987921935, 0.0, 0.0, 0.0])
+        else:
+            atomic_energies = np.array([0. for i in range(83)])
         self.atomic_energies_fn = AtomicEnergiesBlock(atomic_energies)
 
         inter = interaction_cls_first(
@@ -274,10 +278,10 @@ class ScaleShiftMACE(MACE):
         atomic_inter_shift: float,
         # Defaults from OCP / https://github.com/ACEsuit/mace/blob/main/scripts/run_train.py
         gate=torch.nn.functional.silu,
-        atomic_energies=np.array([0.0 for i in range(83)]),
+        atomic_energies=str,
         interaction_cls=RealAgnosticResidualInteractionBlock,
         interaction_cls_first=AgnosticInteractionBlock,
-        max_neighbors: int = 50,
+        max_neighbors: int = 500,
         otf_graph: bool = True,
         use_pbc: bool = True,
         regress_forces: bool = True,
@@ -297,6 +301,14 @@ class ScaleShiftMACE(MACE):
             MLP_irreps,
             avg_num_neighbors,
             correlation,
+            gate,
+            atomic_energies,
+            interaction_cls,
+            interaction_cls_first,
+            max_neighbors,
+            otf_graph,
+            use_pbc,
+            regress_forces,
         )
         self.scale_shift = ScaleShiftBlock(
             scale=atomic_inter_scale, shift=atomic_inter_shift
