@@ -88,13 +88,24 @@ class MACE(BaseModel):
             sh_irreps, normalize=True, normalization="component"
         )
 
-        # Interactions and readout
+        # Node / e0 block
         if atomic_energies == "oc20tiny":
             atomic_energies = np.array([-0.5789446234902406, 0.0, 0.0, 0.0, 0.0, -0.5789446234902277, 0.0, -0.28947231174511384, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.631556987921935, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.631556987921935, 0.0, 0.0, 0.0])
         else:
             atomic_energies = np.array([0. for i in range(83)])
-        self.atomic_energies_fn = AtomicEnergiesBlock(atomic_energies)
 
+        self.nz_z = np.nonzero(atomic_energies)[0]
+        assert len(self.nz_z) == num_elements
+
+        self.register_buffer(
+            "z2idx",
+            torch.zeros(120, dtype=torch.int64).fill_(-1),
+        )
+        for i, z in enumerate(self.nz_z+1): self.z2idx[z] = i
+
+        self.atomic_energies_fn = AtomicEnergiesBlock(atomic_energies[self.nz_z])
+
+        # Interactions and readout
         inter = interaction_cls_first(
             node_attrs_irreps=node_attr_irreps,
             node_feats_irreps=node_feats_irreps,
@@ -158,6 +169,27 @@ class MACE(BaseModel):
             else:
                 self.readouts.append(LinearReadoutBlock(hidden_irreps))
 
+    def atomic_numbers_to_compressed_one_hot(self, atomic_numbers):
+        """
+        Convert atomic numbers to compressed one-hot vectors.
+
+        Returns (num_atoms, num_elements),
+        where num_elements refers to the no. of elements present in the training
+        dataset, not an exhaustive list of all elements. For example, if the
+        only atomic numbers in the dataset are 1, 6, 8, 40, 80, then
+        num_elements would be 5 with the first column in the returned tensor
+        referring to hydrogen, 2nd to carbon and so on.
+        """
+        idx = self.z2idx[atomic_numbers]
+
+        atomic_numbers_1hot = torch.zeros(
+            atomic_numbers.shape[0],
+            len(self.atomic_energies_fn.atomic_energies),
+            device=atomic_numbers.device
+        ).scatter(1, idx.unsqueeze(1), 1.)
+
+        return atomic_numbers_1hot
+
     @conditional_grad(torch.enable_grad())
     def forward(self, data):
 
@@ -191,16 +223,7 @@ class MACE(BaseModel):
         # atomic number. `self.atomic_energies_fn` just matmuls the 1-hot
         # vectors with the list of energies per atomic number, returning the
         # energy per element.
-        #
-        # For OC20, we initialize these per-element energies to 0.0 since
-        # we don't really need linear referencing for adsorption energies?
-
-        atomic_numbers -= 1 # subtract 1 because our embeddings start from 0.
-        atomic_numbers_1hot = torch.zeros(
-            num_atoms,
-            len(self.atomic_energies_fn.atomic_energies),
-            device=atomic_numbers.device
-        ).scatter_(1, atomic_numbers.unsqueeze(1), 1.)
+        atomic_numbers_1hot = self.atomic_numbers_to_compressed_one_hot(atomic_numbers)
 
         node_e0 = self.atomic_energies_fn(atomic_numbers_1hot)
         e0 = scatter_sum(
@@ -346,16 +369,7 @@ class ScaleShiftMACE(MACE):
         # atomic number. `self.atomic_energies_fn` just matmuls the 1-hot
         # vectors with the list of energies per atomic number, returning the
         # energy per element.
-        #
-        # For OC20, we initialize these per-element energies to 0.0 since
-        # we don't really need linear referencing for adsorption energies?
-
-        atomic_numbers -= 1 # subtract 1 because our embeddings start from 0.
-        atomic_numbers_1hot = torch.zeros(
-            num_atoms,
-            len(self.atomic_energies_fn.atomic_energies),
-            device=atomic_numbers.device
-        ).scatter_(1, atomic_numbers.unsqueeze(1), 1.)
+        atomic_numbers_1hot = self.atomic_numbers_to_compressed_one_hot(atomic_numbers)
 
         node_e0 = self.atomic_energies_fn(atomic_numbers_1hot)
         e0 = scatter_sum(
