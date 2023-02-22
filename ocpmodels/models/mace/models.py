@@ -50,7 +50,7 @@ class MACE(BaseModel):
         # per-element energy references currently initialized to 0s.
         atomic_energies=str,
         interaction_cls=RealAgnosticResidualInteractionBlock,
-        interaction_cls_first=AgnosticInteractionBlock,
+        interaction_cls_first=RealAgnosticResidualInteractionBlock,
         max_neighbors: int = 50,
         otf_graph: bool = True,
         use_pbc: bool = True,
@@ -304,7 +304,7 @@ class ScaleShiftMACE(MACE):
         gate=torch.nn.functional.silu,
         atomic_energies=str,
         interaction_cls=RealAgnosticResidualInteractionBlock,
-        interaction_cls_first=AgnosticInteractionBlock,
+        interaction_cls_first=RealAgnosticResidualInteractionBlock,
         max_neighbors: int = 500,
         otf_graph: bool = True,
         use_pbc: bool = True,
