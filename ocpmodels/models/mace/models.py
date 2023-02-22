@@ -4,12 +4,9 @@ import numpy as np
 import torch
 from e3nn import o3
 
-from .mace_core.blocks import (
-    EquivariantProductBasisBlock,
-    RealAgnosticResidualInteractionBlock,
-    AgnosticInteractionBlock
-)
-from .mace_core.scatter import scatter_sum
+from ocpmodels.common.registry import registry
+from ocpmodels.common.utils import conditional_grad
+from ocpmodels.models.base import BaseModel
 
 from .blocks import (
     AtomicEnergiesBlock,
@@ -19,11 +16,13 @@ from .blocks import (
     RadialEmbeddingBlock,
     ScaleShiftBlock,
 )
+from .mace_core.blocks import (
+    AgnosticInteractionBlock,
+    EquivariantProductBasisBlock,
+    RealAgnosticResidualInteractionBlock,
+)
+from .mace_core.scatter import scatter_sum
 from .utils import compute_forces
-
-from ocpmodels.common.registry import registry
-from ocpmodels.models.base import BaseModel
-from ocpmodels.common.utils import conditional_grad
 
 
 @registry.register_model("mace")
@@ -70,7 +69,9 @@ class MACE(BaseModel):
 
         # Embedding
         node_attr_irreps = o3.Irreps([(num_elements, (0, 1))])
-        node_feats_irreps = o3.Irreps([(hidden_irreps.count(o3.Irrep(0, 1)), (0, 1))])
+        node_feats_irreps = o3.Irreps(
+            [(hidden_irreps.count(o3.Irrep(0, 1)), (0, 1))]
+        )
         self.node_embedding = LinearNodeEmbeddingBlock(
             irreps_in=node_attr_irreps, irreps_out=node_feats_irreps
         )
@@ -89,10 +90,12 @@ class MACE(BaseModel):
         )
 
         # Node / e0 block
+        # fmt: off
         if atomic_energies == "oc20tiny":
             atomic_energies = np.array([-0.5789446234902406, 0.0, 0.0, 0.0, 0.0, -0.5789446234902277, 0.0, -0.28947231174511384, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.631556987921935, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.631556987921935, 0.0, 0.0, 0.0])
         else:
             atomic_energies = np.array([0. for i in range(83)])
+        # fmt: on
 
         self.nz_z = np.nonzero(atomic_energies)[0]
         assert len(self.nz_z) == num_elements
@@ -101,9 +104,12 @@ class MACE(BaseModel):
             "z2idx",
             torch.zeros(120, dtype=torch.int64).fill_(-1),
         )
-        for i, z in enumerate(self.nz_z+1): self.z2idx[z] = i
+        for i, z in enumerate(self.nz_z + 1):
+            self.z2idx[z] = i
 
-        self.atomic_energies_fn = AtomicEnergiesBlock(atomic_energies[self.nz_z])
+        self.atomic_energies_fn = AtomicEnergiesBlock(
+            atomic_energies[self.nz_z]
+        )
 
         # Interactions and readout
         inter = interaction_cls_first(
@@ -186,8 +192,8 @@ class MACE(BaseModel):
         atomic_numbers_1hot = torch.zeros(
             atomic_numbers.shape[0],
             len(self.atomic_energies_fn.atomic_energies),
-            device=atomic_numbers.device
-        ).scatter(1, idx.unsqueeze(1), 1.)
+            device=atomic_numbers.device,
+        ).scatter(1, idx.unsqueeze(1), 1.0)
 
         return atomic_numbers_1hot
 
@@ -199,9 +205,7 @@ class MACE(BaseModel):
 
         # OCP prepro boilerplate.
         pos = data.pos
-        batch = data.batch
         atomic_numbers = data.atomic_numbers.long()
-        num_atoms = atomic_numbers.shape[0]
         num_graphs = data.batch.max() + 1
 
         # MACE computes forces via gradients.
@@ -211,11 +215,10 @@ class MACE(BaseModel):
             edge_index,
             D_st,
             distance_vec,
-            cell_offsets,
-            cell_offset_distances,
-            neighbors,
+            _,
+            _,
+            _,
         ) = self.generate_graph(data)
-        idx_s, idx_t = edge_index
         ### OCP prepro ends.
 
         # Atomic energies
@@ -224,7 +227,9 @@ class MACE(BaseModel):
         # atomic number. `self.atomic_energies_fn` just matmuls the 1-hot
         # vectors with the list of energies per atomic number, returning the
         # energy per element.
-        atomic_numbers_1hot = self.atomic_numbers_to_compressed_one_hot(atomic_numbers)
+        atomic_numbers_1hot = self.atomic_numbers_to_compressed_one_hot(
+            atomic_numbers
+        )
 
         node_e0 = self.atomic_energies_fn(atomic_numbers_1hot)
         e0 = scatter_sum(
@@ -263,7 +268,10 @@ class MACE(BaseModel):
             )
             node_energies = readout(node_feats).squeeze(-1)  # [n_nodes, ]
             energy = scatter_sum(
-                src=node_energies, index=data.batch, dim=-1, dim_size=num_graphs
+                src=node_energies,
+                index=data.batch,
+                dim=-1,
+                dim_size=num_graphs,
             )  # [n_graphs,]
             energies.append(energy)
 
@@ -345,9 +353,7 @@ class ScaleShiftMACE(MACE):
 
         # OCP prepro boilerplate.
         pos = data.pos
-        batch = data.batch
         atomic_numbers = data.atomic_numbers.long()
-        num_atoms = atomic_numbers.shape[0]
         num_graphs = data.batch.max() + 1
 
         # MACE computes forces via gradients.
@@ -357,11 +363,10 @@ class ScaleShiftMACE(MACE):
             edge_index,
             D_st,
             distance_vec,
-            cell_offsets,
-            cell_offset_distances,
-            neighbors,
+            _,
+            _,
+            _,
         ) = self.generate_graph(data)
-        idx_s, idx_t = edge_index
         ### OCP prepro ends.
 
         # Atomic energies
@@ -370,7 +375,9 @@ class ScaleShiftMACE(MACE):
         # atomic number. `self.atomic_energies_fn` just matmuls the 1-hot
         # vectors with the list of energies per atomic number, returning the
         # energy per element.
-        atomic_numbers_1hot = self.atomic_numbers_to_compressed_one_hot(atomic_numbers)
+        atomic_numbers_1hot = self.atomic_numbers_to_compressed_one_hot(
+            atomic_numbers
+        )
 
         node_e0 = self.atomic_energies_fn(atomic_numbers_1hot)
         e0 = scatter_sum(
@@ -399,7 +406,9 @@ class ScaleShiftMACE(MACE):
             node_feats = product(
                 node_feats=node_feats, sc=sc, node_attrs=atomic_numbers_1hot
             )
-            node_es_list.append(readout(node_feats).squeeze(-1))  # {[n_nodes, ], }
+            node_es_list.append(
+                readout(node_feats).squeeze(-1)
+            )  # {[n_nodes, ], }
 
         # Sum over interactions
         node_inter_es = torch.sum(
@@ -409,7 +418,10 @@ class ScaleShiftMACE(MACE):
 
         # Sum over nodes in graph
         inter_e = scatter_sum(
-            src=node_inter_es, index=data.batch, dim=-1, dim_size=data.num_graphs
+            src=node_inter_es,
+            index=data.batch,
+            dim=-1,
+            dim_size=data.num_graphs,
         )  # [n_graphs,]
 
         # Add E_0 and (scaled) interaction energy
@@ -420,15 +432,14 @@ class ScaleShiftMACE(MACE):
 
         return total_e, forces
 
+
 @registry.register_model("ase_nbrlist_mace")
 class ASENeighborListMACE(ScaleShiftMACE):
     @conditional_grad(torch.enable_grad())
     def forward(self, data):
         # OCP prepro boilerplate.
         pos = data.pos
-        batch = data.batch
         atomic_numbers = data.atomic_numbers.long()
-        num_atoms = atomic_numbers.shape[0]
         num_graphs = data.batch.max() + 1
 
         # MACE computes forces via gradients.
@@ -436,7 +447,9 @@ class ASENeighborListMACE(ScaleShiftMACE):
 
         sender, receiver = data.edge_index[0], data.edge_index[1]
         vectors = pos[receiver] - pos[sender] + data.shifts  # [n_edges, 3]
-        lengths = torch.linalg.norm(vectors, dim=-1, keepdim=True)  # [n_edges, 1]
+        lengths = torch.linalg.norm(
+            vectors, dim=-1, keepdim=True
+        )  # [n_edges, 1]
 
         # Atomic energies
         #
@@ -444,7 +457,9 @@ class ASENeighborListMACE(ScaleShiftMACE):
         # atomic number. `self.atomic_energies_fn` just matmuls the 1-hot
         # vectors with the list of energies per atomic number, returning the
         # energy per element.
-        atomic_numbers_1hot = self.atomic_numbers_to_compressed_one_hot(atomic_numbers)
+        atomic_numbers_1hot = self.atomic_numbers_to_compressed_one_hot(
+            atomic_numbers
+        )
 
         node_e0 = self.atomic_energies_fn(atomic_numbers_1hot)
         e0 = scatter_sum(
@@ -471,7 +486,9 @@ class ASENeighborListMACE(ScaleShiftMACE):
             node_feats = product(
                 node_feats=node_feats, sc=sc, node_attrs=atomic_numbers_1hot
             )
-            node_es_list.append(readout(node_feats).squeeze(-1))  # {[n_nodes, ], }
+            node_es_list.append(
+                readout(node_feats).squeeze(-1)
+            )  # {[n_nodes, ], }
 
         # Sum over interactions
         node_inter_es = torch.sum(
@@ -481,7 +498,10 @@ class ASENeighborListMACE(ScaleShiftMACE):
 
         # Sum over nodes in graph
         inter_e = scatter_sum(
-            src=node_inter_es, index=data.batch, dim=-1, dim_size=data.num_graphs
+            src=node_inter_es,
+            index=data.batch,
+            dim=-1,
+            dim_size=data.num_graphs,
         )  # [n_graphs,]
 
         # Add E_0 and (scaled) interaction energy
