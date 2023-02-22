@@ -181,6 +181,7 @@ class MACE(BaseModel):
         referring to hydrogen, 2nd to carbon and so on.
         """
         idx = self.z2idx[atomic_numbers]
+        assert torch.all(idx >= 0)
 
         atomic_numbers_1hot = torch.zeros(
             atomic_numbers.shape[0],
