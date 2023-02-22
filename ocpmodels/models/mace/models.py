@@ -419,3 +419,75 @@ class ScaleShiftMACE(MACE):
         )
 
         return total_e, forces
+
+@registry.register_model("ase_nbrlist_mace")
+class ASENeighborListMACE(ScaleShiftMACE):
+    @conditional_grad(torch.enable_grad())
+    def forward(self, data):
+        # OCP prepro boilerplate.
+        pos = data.pos
+        batch = data.batch
+        atomic_numbers = data.atomic_numbers.long()
+        num_atoms = atomic_numbers.shape[0]
+        num_graphs = data.batch.max() + 1
+
+        # MACE computes forces via gradients.
+        pos.requires_grad_(True)
+
+        sender, receiver = data.edge_index[0], data.edge_index[1]
+        vectors = pos[receiver] - pos[sender] + data.shifts  # [n_edges, 3]
+        lengths = torch.linalg.norm(vectors, dim=-1, keepdim=True)  # [n_edges, 1]
+
+        # Atomic energies
+        #
+        # Comment(@abhshkdz): `data.node_attrs` is a 1-hot vector for each
+        # atomic number. `self.atomic_energies_fn` just matmuls the 1-hot
+        # vectors with the list of energies per atomic number, returning the
+        # energy per element.
+        atomic_numbers_1hot = self.atomic_numbers_to_compressed_one_hot(atomic_numbers)
+
+        node_e0 = self.atomic_energies_fn(atomic_numbers_1hot)
+        e0 = scatter_sum(
+            src=node_e0, index=data.batch, dim=-1, dim_size=num_graphs
+        )  # [n_graphs,]
+
+        # Embeddings
+        node_feats = self.node_embedding(atomic_numbers_1hot)
+        edge_attrs = self.spherical_harmonics(vectors)
+        edge_feats = self.radial_embedding(lengths)
+
+        # Interactions
+        node_es_list = []
+        for interaction, product, readout in zip(
+            self.interactions, self.products, self.readouts
+        ):
+            node_feats, sc = interaction(
+                node_attrs=atomic_numbers_1hot,
+                node_feats=node_feats,
+                edge_attrs=edge_attrs,
+                edge_feats=edge_feats,
+                edge_index=data.edge_index,
+            )
+            node_feats = product(
+                node_feats=node_feats, sc=sc, node_attrs=atomic_numbers_1hot
+            )
+            node_es_list.append(readout(node_feats).squeeze(-1))  # {[n_nodes, ], }
+
+        # Sum over interactions
+        node_inter_es = torch.sum(
+            torch.stack(node_es_list, dim=0), dim=0
+        )  # [n_nodes, ]
+        node_inter_es = self.scale_shift(node_inter_es)
+
+        # Sum over nodes in graph
+        inter_e = scatter_sum(
+            src=node_inter_es, index=data.batch, dim=-1, dim_size=data.num_graphs
+        )  # [n_graphs,]
+
+        # Add E_0 and (scaled) interaction energy
+        total_e = e0 + inter_e
+        forces = compute_forces(
+            energy=inter_e, positions=pos, training=self.training
+        )
+
+        return total_e, forces
