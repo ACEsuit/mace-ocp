@@ -51,7 +51,7 @@ class MACE(BaseModel):
         atomic_energies=str,
         interaction_cls=RealAgnosticResidualInteractionBlock,
         interaction_cls_first=RealAgnosticResidualInteractionBlock,
-        max_neighbors: int = 50,
+        max_neighbors: int = 500,
         otf_graph: bool = True,
         use_pbc: bool = True,
         regress_forces: bool = True,
