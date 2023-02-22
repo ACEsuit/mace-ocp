@@ -22,9 +22,13 @@ dataset:
     # target_std: 2.887317180633545
     # grad_target_mean: 0.0
     # grad_target_std: 2.887317180633545
+    # ase_nbrlist: True
+    # ase_cutoff: 5.0
   - src: /checkpoint/bmwood/oc20_small/lmdbs/random1215212/v1_sid_str/val/ads_energy/
     total_energy: True
     oc20_ref: /checkpoint/janlan/ocp/other_data/final_ref_energies_02_07_2021.pkl
+    # ase_nbrlist: True
+    # ase_cutoff: 5.0
   # - src: /checkpoint/bmwood/oc20_small/lmdbs/random1215212/test/ads_energy
 
 model:
