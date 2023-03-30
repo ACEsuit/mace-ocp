@@ -3,65 +3,52 @@ trainer: mace_trainer
 logger: wandb
 
 task:
-  dataset: lmdb  # for training on total energies.
+  dataset: lmdb
   primary_metric: forces_mae
-  train_on_free_atoms: False
+  train_on_free_atoms: True
   eval_on_free_atoms: True
-  # OCP MACE models have "z2idx", which is missing in official MACE models.
-  # Official MACE models have "atomic_numbers", "r_max", "num_interactions",
-  # which are missing in OCP MACE models. Hence we set strict_load = False.
-  strict_load: False
 
 dataset:
-  - src: /checkpoint/bmwood/oc20_small/oc20_xxs_dataset/tot_e_lmdb/train/
-    total_energy: True
-    oc20_ref: /checkpoint/janlan/ocp/other_data/final_ref_energies_02_07_2021.pkl
+  - src: /datasets01/open_catalyst/oc20/082422/struct_to_energy_forces/train/2M
     # Switch off normalize_labels since scale_shift in the MACE model does the same thing.
     normalize_labels: False
     # target_mean: -0.7554450631141663
     # target_std: 2.887317180633545
     # grad_target_mean: 0.0
     # grad_target_std: 2.887317180633545
-    # ase_nbrlist: True
-    # ase_cutoff: 8.0
-  - src: /checkpoint/bmwood/oc20_small/oc20_xs_dataset/tot_e_lmdb/val/
-    total_energy: True
-    oc20_ref: /checkpoint/janlan/ocp/other_data/final_ref_energies_02_07_2021.pkl
-    # ase_nbrlist: True
-    # ase_cutoff: 8.0
-  # - src: /checkpoint/bmwood/oc20_small/oc20_xs_dataset/tot_e_lmdb/val/
+  - src: /datasets01/open_catalyst/oc20/082422/struct_to_energy_forces/val/id_30k
 
 model:
   name: scaleshift_mace
-  r_max: 8.0
-  max_neighbors: 500
-  avg_num_neighbors: 16.268049240112305
+  # Copied from https://github.com/ACEsuit/mace#training.
+  r_max: 6.0 # was originally 5.0
+  # Use `avg_num_neighbors` = 50 if r_max is 12.0, 35 if r_max is 6.0.
+  # This is because max_neighbors is set to 50. At r_max = 12, we get all nbrs.
+  avg_num_neighbors: 35
   num_bessel: 8
   num_polynomial_cutoff: 5
   max_ell: 3
-  num_interactions: 2
-  num_elements: 5
-  hidden_irreps: 256x0e + 256x1o + 256x2e
-  MLP_irreps: 16x0e
-  correlation: 3
+  num_interactions: 3
+  num_elements: 83
+  hidden_irreps: 128x0e + 128x1o + 128x2e
+  MLP_irreps: 128x0e
   # atomic_energies: ref energy per atomic number.
-  atomic_energies: oc20xxs
-  # torch.div(energies, natoms).mean()
-  atomic_inter_shift: 0.0046684232644386295
-  # torch.sqrt(torch.mean(torch.square(forces)))
-  atomic_inter_scale: 0.37896862626075745
+  correlation: 3
+  atomic_inter_shift: -0.75544
+  atomic_inter_scale: 2.88732
   # OCP flags.
   regress_forces: True
   otf_graph: True
   use_pbc: True
 
 optim:
-  batch_size: 32
-  eval_batch_size: 32
+  batch_size: 8
+  eval_batch_size: 8
   load_balancing: atoms
   eval_every: 1000
   num_workers: 2
-  # default from (https://github.com/ACEsuit/mace/blob/main/mace/tools/arg_parser.py#L234)
+  # Default in MACE (https://github.com/ACEsuit/mace/blob/main/mace/tools/arg_parser.py#L234)
+  # was 1.e-2.
   lr_initial: 1.e-2
   optimizer: AdamW
   optimizer_params: {"amsgrad": True}
@@ -74,14 +61,16 @@ optim:
   # https://github.com/ACEsuit/mace-ocp/blob/main/ocpmodels/trainers/forces_trainer.py#L412
   # And so we should probably keep a lower patience. Using default from OCP for now.
   patience: 3
-  max_epochs: 1000
+  max_epochs: 40
   # TODO(@abhshkdz): implement the swa scheduler, i.e. switch to high energy coefficient and low force coefficient after loss plateaus with initial coefficients.
-  force_coefficient: 1000
-  energy_coefficient: 37
+  force_coefficient: 100
+  energy_coefficient: 1
   # default from https://github.com/ACEsuit/mace/blob/main/mace/tools/arg_parser.py#L285
   ema_decay: 0.99
   # default from https://github.com/ACEsuit/mace/blob/main/mace/tools/arg_parser.py#L321
   clip_grad_norm: 10
+  loss_energy: mae
+  loss_force: l2mae
   # default from https://github.com/ACEsuit/mace/blob/main/mace/tools/arg_parser.py#L240.
   weight_decay: 5.e-7
 
