@@ -2,7 +2,6 @@ from abc import ABC, abstractmethod
 from typing import Callable, Dict, Optional, Tuple, Union
 
 import numpy as np
-
 import torch
 import torch.nn.functional
 from e3nn import nn, o3
@@ -15,9 +14,7 @@ from .mace_core.irreps_tools import (
 )
 from .mace_core.scatter import scatter_sum
 from .mace_core.symmetric_contraction import SymmetricContraction
-
-from .radial import BesselBasis, PolynomialCutoff
-
+from .radial import BesselBasis, GaussianBasis, PolynomialCutoff
 
 
 class LinearNodeEmbeddingBlock(torch.nn.Module):
@@ -35,25 +32,38 @@ class LinearNodeEmbeddingBlock(torch.nn.Module):
 class LinearReadoutBlock(torch.nn.Module):
     def __init__(self, irreps_in: o3.Irreps):
         super().__init__()
-        self.linear = o3.Linear(irreps_in=irreps_in, irreps_out=o3.Irreps("0e"))
+        self.linear = o3.Linear(
+            irreps_in=irreps_in, irreps_out=o3.Irreps("0e")
+        )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # [n_nodes, irreps]  # [..., ]
+    def forward(
+        self, x: torch.Tensor
+    ) -> torch.Tensor:  # [n_nodes, irreps]  # [..., ]
         return self.linear(x)  # [n_nodes, 1]
 
 
 class NonLinearReadoutBlock(torch.nn.Module):
     def __init__(
-        self, irreps_in: o3.Irreps, MLP_irreps: o3.Irreps, gate: Optional[Callable]
+        self,
+        irreps_in: o3.Irreps,
+        MLP_irreps: o3.Irreps,
+        gate: Optional[Callable],
     ):
         super().__init__()
         self.hidden_irreps = MLP_irreps
-        self.linear_1 = o3.Linear(irreps_in=irreps_in, irreps_out=self.hidden_irreps)
-        self.non_linearity = nn.Activation(irreps_in=self.hidden_irreps, acts=[gate])
+        self.linear_1 = o3.Linear(
+            irreps_in=irreps_in, irreps_out=self.hidden_irreps
+        )
+        self.non_linearity = nn.Activation(
+            irreps_in=self.hidden_irreps, acts=[gate]
+        )
         self.linear_2 = o3.Linear(
             irreps_in=self.hidden_irreps, irreps_out=o3.Irreps("0e")
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # [n_nodes, irreps]  # [..., ]
+    def forward(
+        self, x: torch.Tensor
+    ) -> torch.Tensor:  # [n_nodes, irreps]  # [..., ]
         x = self.non_linearity(self.linear_1(x))
         return self.linear_2(x)  # [n_nodes, 1]
 
@@ -76,14 +86,26 @@ class AtomicEnergiesBlock(torch.nn.Module):
         return torch.matmul(x, self.atomic_energies)
 
     def __repr__(self):
-        formatted_energies = ", ".join([f"{x:.4f}" for x in self.atomic_energies])
+        formatted_energies = ", ".join(
+            [f"{x:.4f}" for x in self.atomic_energies]
+        )
         return f"{self.__class__.__name__}(energies=[{formatted_energies}])"
 
 
 class RadialEmbeddingBlock(torch.nn.Module):
-    def __init__(self, r_max: float, num_bessel: int, num_polynomial_cutoff: int):
+    def __init__(
+        self,
+        r_max: float,
+        num_bessel: int,
+        num_polynomial_cutoff: int,
+        rbf: str = "bessel",
+    ):
         super().__init__()
-        self.bessel_fn = BesselBasis(r_max=r_max, num_basis=num_bessel)
+        self.rbf = rbf
+        if rbf == "bessel":
+            self.bessel_fn = BesselBasis(r_max=r_max, num_basis=num_bessel)
+        elif rbf == "gaussian":
+            self.rbf_fn = GaussianBasis(r_max=r_max, num_gaussians=num_bessel)
         self.cutoff_fn = PolynomialCutoff(r_max=r_max, p=num_polynomial_cutoff)
         self.out_dim = num_bessel
 
@@ -91,16 +113,23 @@ class RadialEmbeddingBlock(torch.nn.Module):
         self,
         edge_lengths: torch.Tensor,  # [n_edges, 1]
     ):
-        bessel = self.bessel_fn(edge_lengths)  # [n_edges, n_basis]
-        cutoff = self.cutoff_fn(edge_lengths)  # [n_edges, 1]
-        return bessel * cutoff  # [n_edges, n_basis]
+        if self.rbf == "bessel":
+            bessel = self.bessel_fn(edge_lengths)  # [n_edges, n_basis]
+            cutoff = self.cutoff_fn(edge_lengths)  # [n_edges, 1]
+            return bessel * cutoff  # [n_edges, n_basis]
+        elif self.rbf == "gaussian":
+            gaussian = self.rbf_fn(edge_lengths)  # [n_edges, n_basis]
+            cutoff = self.cutoff_fn(edge_lengths)  # [n_edges, 1]
+            return gaussian * cutoff  # [n_edges, n_basis]
 
 
 nonlinearities = {1: torch.nn.SiLU(), -1: torch.nn.Tanh()}
 
 
 class TensorProductWeightsBlock(torch.nn.Module):
-    def __init__(self, num_elements: int, num_edge_feats: int, num_feats_out: int):
+    def __init__(
+        self, num_elements: int, num_edge_feats: int, num_feats_out: int
+    ):
         super().__init__()
 
         weights = torch.empty(
@@ -116,7 +145,10 @@ class TensorProductWeightsBlock(torch.nn.Module):
         edge_feats: torch.Tensor,
     ):
         return torch.einsum(
-            "be, ba, aek -> bk", edge_feats, sender_or_receiver_node_attrs, self.weights
+            "be, ba, aek -> bk",
+            edge_feats,
+            sender_or_receiver_node_attrs,
+            self.weights,
         )
 
     def __repr__(self):
@@ -157,7 +189,10 @@ class ResidualElementDependentInteractionBlock(InteractionBlock):
         self.irreps_out = linear_out_irreps(irreps_mid, self.target_irreps)
         self.irreps_out = self.irreps_out.simplify()
         self.linear = o3.Linear(
-            irreps_mid, self.irreps_out, internal_weights=True, shared_weights=True
+            irreps_mid,
+            self.irreps_out,
+            internal_weights=True,
+            shared_weights=True,
         )
 
         # Selector TensorProduct
@@ -221,7 +256,10 @@ class AgnosticNonlinearInteractionBlock(InteractionBlock):
         self.irreps_out = linear_out_irreps(irreps_mid, self.target_irreps)
         self.irreps_out = self.irreps_out.simplify()
         self.linear = o3.Linear(
-            irreps_mid, self.irreps_out, internal_weights=True, shared_weights=True
+            irreps_mid,
+            self.irreps_out,
+            internal_weights=True,
+            shared_weights=True,
         )
 
         # Selector TensorProduct
@@ -286,7 +324,10 @@ class AgnosticResidualNonlinearInteractionBlock(InteractionBlock):
         self.irreps_out = linear_out_irreps(irreps_mid, self.target_irreps)
         self.irreps_out = self.irreps_out.simplify()
         self.linear = o3.Linear(
-            irreps_mid, self.irreps_out, internal_weights=True, shared_weights=True
+            irreps_mid,
+            self.irreps_out,
+            internal_weights=True,
+            shared_weights=True,
         )
 
         # Selector TensorProduct
@@ -332,6 +373,4 @@ class ScaleShiftBlock(torch.nn.Module):
         return self.scale * x + self.shift
 
     def __repr__(self):
-        return (
-            f"{self.__class__.__name__}(scale={self.scale:.6f}, shift={self.shift:.6f})"
-        )
+        return f"{self.__class__.__name__}(scale={self.scale:.6f}, shift={self.shift:.6f})"

@@ -54,6 +54,9 @@ class MACE(BaseModel):
         otf_graph: bool = True,
         use_pbc: bool = True,
         regress_forces: bool = True,
+        # support for gaussian basis.
+        rbf: str = "bessel",
+        num_rbf: int = 8,
     ):
         super().__init__()
         self.cutoff = self.r_max = r_max
@@ -75,11 +78,20 @@ class MACE(BaseModel):
         self.node_embedding = LinearNodeEmbeddingBlock(
             irreps_in=node_attr_irreps, irreps_out=node_feats_irreps
         )
-        self.radial_embedding = RadialEmbeddingBlock(
-            r_max=r_max,
-            num_bessel=num_bessel,
-            num_polynomial_cutoff=num_polynomial_cutoff,
-        )
+        if rbf == "bessel":
+            self.radial_embedding = RadialEmbeddingBlock(
+                r_max=r_max,
+                num_bessel=num_bessel,
+                num_polynomial_cutoff=num_polynomial_cutoff,
+                rbf="bessel",
+            )
+        elif rbf == "gaussian":
+            self.radial_embedding = RadialEmbeddingBlock(
+                r_max=r_max,
+                num_bessel=num_rbf,
+                num_polynomial_cutoff=num_polynomial_cutoff,
+                rbf="gaussian",
+            )
         edge_feats_irreps = o3.Irreps(f"{self.radial_embedding.out_dim}x0e")
 
         sh_irreps = o3.Irreps.spherical_harmonics(max_ell)
@@ -321,6 +333,9 @@ class ScaleShiftMACE(MACE):
         otf_graph: bool = True,
         use_pbc: bool = True,
         regress_forces: bool = True,
+        # support for gaussian basis.
+        rbf: str = "bessel",
+        num_rbf: int = 8,
     ):
         super().__init__(
             num_atoms,
@@ -345,6 +360,8 @@ class ScaleShiftMACE(MACE):
             otf_graph,
             use_pbc,
             regress_forces,
+            rbf=rbf,
+            num_rbf=num_rbf,
         )
         self.scale_shift = ScaleShiftBlock(
             scale=atomic_inter_scale, shift=atomic_inter_shift

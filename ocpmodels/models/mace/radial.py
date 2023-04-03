@@ -31,7 +31,9 @@ class BesselBasis(torch.nn.Module):
         )
         self.register_buffer(
             "prefactor",
-            torch.tensor(np.sqrt(2.0 / r_max), dtype=torch.get_default_dtype()),
+            torch.tensor(
+                np.sqrt(2.0 / r_max), dtype=torch.get_default_dtype()
+            ),
         )
 
     def forward(
@@ -48,6 +50,34 @@ class BesselBasis(torch.nn.Module):
         )
 
 
+# From https://github.com/Open-Catalyst-Project/ocp/blob/a8ac36d75fc60d5b6d54b4019502941eb868fed0/ocpmodels/models/gemnet_oc/layers/radial_basis.py#L65
+class GaussianBasis(torch.nn.Module):
+    def __init__(self, r_max: float, num_gaussians=50, trainable=False):
+        super().__init__()
+
+        offset = torch.linspace(0, r_max, num_gaussians)
+        if trainable:
+            self.offset = torch.nn.Parameter(offset, requires_grad=True)
+        else:
+            self.register_buffer("offset", offset)
+
+        self.register_buffer(
+            "coeff",
+            torch.tensor(
+                -0.5 / (r_max / (num_gaussians - 1)) ** 2,
+                dtype=torch.get_default_dtype(),
+            ),
+        )
+
+        self.register_buffer(
+            "r_max", torch.tensor(r_max, dtype=torch.get_default_dtype())
+        )
+
+    def forward(self, dist: torch.Tensor) -> torch.Tensor:
+        dist = dist - self.offset[None, :]
+        return torch.exp(self.coeff * torch.pow(dist, 2))
+
+
 class PolynomialCutoff(torch.nn.Module):
     """
     Klicpera, J.; Groß, J.; Günnemann, S. Directional Message Passing for Molecular Graphs; ICLR 2020.
@@ -59,7 +89,9 @@ class PolynomialCutoff(torch.nn.Module):
 
     def __init__(self, r_max: float, p=6):
         super().__init__()
-        self.register_buffer("p", torch.tensor(p, dtype=torch.get_default_dtype()))
+        self.register_buffer(
+            "p", torch.tensor(p, dtype=torch.get_default_dtype())
+        )
         self.register_buffer(
             "r_max", torch.tensor(r_max, dtype=torch.get_default_dtype())
         )
