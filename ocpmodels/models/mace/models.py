@@ -57,6 +57,7 @@ class MACE(BaseModel):
         # support for gaussian basis.
         rbf: str = "bessel",
         num_rbf: int = 8,
+        rbf_hidden_channels: int = 64,
     ):
         super().__init__()
         self.cutoff = self.r_max = r_max
@@ -138,6 +139,7 @@ class MACE(BaseModel):
             # MACE considers a fixed `avg_num_neighbors`. We can either compute
             # this ~fixed statistic for OC20, or compute this value on-the-fly.
             avg_num_neighbors=avg_num_neighbors,
+            rbf_hidden_channels=rbf_hidden_channels,
         )
         self.interactions = torch.nn.ModuleList([inter])
 
@@ -174,6 +176,7 @@ class MACE(BaseModel):
                 target_irreps=interaction_irreps,
                 hidden_irreps=hidden_irreps_out,
                 avg_num_neighbors=avg_num_neighbors,
+                rbf_hidden_channels=rbf_hidden_channels,
             )
             self.interactions.append(inter)
             prod = EquivariantProductBasisBlock(
@@ -336,6 +339,7 @@ class ScaleShiftMACE(MACE):
         # support for gaussian basis.
         rbf: str = "bessel",
         num_rbf: int = 8,
+        rbf_hidden_channels: int = 64,
     ):
         super().__init__(
             num_atoms,
@@ -362,6 +366,7 @@ class ScaleShiftMACE(MACE):
             regress_forces,
             rbf=rbf,
             num_rbf=num_rbf,
+            rbf_hidden_channels=rbf_hidden_channels,
         )
         self.scale_shift = ScaleShiftBlock(
             scale=atomic_inter_scale, shift=atomic_inter_shift
