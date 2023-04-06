@@ -44,7 +44,7 @@ model:
   max_ell: 3
   num_interactions: 2
   num_elements: 56
-  hidden_irreps: 1024x0e + 1024x1o + 1024x2e
+  hidden_irreps: 512x0e + 512x1o + 512x2e
   MLP_irreps: 128x0e
   correlation: 3
   # atomic_energies: ref energy per atomic number.
@@ -57,10 +57,11 @@ model:
   regress_forces: True
   otf_graph: True
   use_pbc: True
+  direct_forces: True
 
 optim:
-  batch_size: 2
-  eval_batch_size: 2
+  batch_size: 8
+  eval_batch_size: 8
   load_balancing: atoms
   eval_every: 1000
   num_workers: 2

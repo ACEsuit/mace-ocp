@@ -58,6 +58,7 @@ class MACE(BaseModel):
         rbf: str = "bessel",
         num_rbf: int = 8,
         rbf_hidden_channels: int = 64,
+        direct_forces: bool = False,
     ):
         super().__init__()
         self.cutoff = self.r_max = r_max
@@ -66,6 +67,7 @@ class MACE(BaseModel):
         self.otf_graph = otf_graph
         self.use_pbc = use_pbc
         self.regress_forces = regress_forces
+        self.direct_forces = direct_forces
 
         # YAML loads them as strings, initialize them as o3.Irreps.
         hidden_irreps = o3.Irreps(hidden_irreps)
@@ -163,9 +165,12 @@ class MACE(BaseModel):
 
         for i in range(num_interactions - 1):
             if i == num_interactions - 2:
-                hidden_irreps_out = str(
-                    hidden_irreps[0]
-                )  # Select only scalars for last layer
+                if self.direct_forces:
+                    hidden_irreps_out = str(hidden_irreps[:2])
+                else:
+                    hidden_irreps_out = str(
+                        hidden_irreps[0]
+                    )  # Select only scalars for last layer
             else:
                 hidden_irreps_out = hidden_irreps
             inter = interaction_cls(
@@ -340,6 +345,8 @@ class ScaleShiftMACE(MACE):
         rbf: str = "bessel",
         num_rbf: int = 8,
         rbf_hidden_channels: int = 64,
+        # support for direct forces.
+        direct_forces: bool = False,
     ):
         super().__init__(
             num_atoms,
@@ -367,10 +374,14 @@ class ScaleShiftMACE(MACE):
             rbf=rbf,
             num_rbf=num_rbf,
             rbf_hidden_channels=rbf_hidden_channels,
+            direct_forces=direct_forces,
         )
         self.scale_shift = ScaleShiftBlock(
             scale=atomic_inter_scale, shift=atomic_inter_shift
         )
+
+        if self.direct_forces:
+            self.force_readout = ForceBlock(o3.Irreps(hidden_irreps))
 
     @conditional_grad(torch.enable_grad())
     def forward(self, data):
@@ -453,8 +464,109 @@ class ScaleShiftMACE(MACE):
 
         # Add E_0 and (scaled) interaction energy
         total_e = e0 + inter_e
-        forces = compute_forces(
-            energy=inter_e, positions=pos, training=self.training
-        )
+
+        if self.direct_forces:
+            forces = self.force_readout(node_feats)
+        else:
+            forces = compute_forces(
+                energy=inter_e, positions=pos, training=self.training
+            )
 
         return total_e, forces
+
+
+class ForceBlock(torch.nn.Module):
+    def __init__(self, hidden_irreps):
+        super().__init__()
+
+        # TODO(@abhshkdz): is this assertion needed?
+        self.hidden_irreps = hidden_irreps
+        assert hidden_irreps[0].dim * 3 == hidden_irreps[1].dim
+
+        l0_h = hidden_irreps[0].mul
+        l1_h = hidden_irreps[1].mul
+
+        self.output_network = torch.nn.ModuleList(
+            [
+                GatedEquivariantBlock(l0_h, l1_h, l1_h // 2),
+                GatedEquivariantBlock(l1_h // 2, l1_h // 2, 1),
+            ]
+        )
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for layer in self.output_network:
+            layer.reset_parameters()
+
+    def forward(self, node_feats):
+        # split node_feats into scalar and vector components.
+        x = node_feats[:, : self.hidden_irreps[0].dim]
+        vec = node_feats[
+            :,
+            self.hidden_irreps[0].dim : self.hidden_irreps[0].dim
+            + self.hidden_irreps[1].dim,
+        ]
+
+        vec = vec.reshape(vec.shape[0], self.hidden_irreps[1].mul, 3)
+        vec = vec.transpose(1, 2)
+
+        # pass it through the gated equivariant blocks.
+        for layer in self.output_network:
+            x, vec = layer(x, vec)
+
+        # return the vector components.
+        return vec.squeeze()
+
+
+# Implementation borrowed from TorchMD-Net
+class GatedEquivariantBlock(torch.nn.Module):
+    """Gated Equivariant Block as defined in Schütt et al. (2021):
+    Equivariant message passing for the prediction of tensorial properties and molecular spectra
+    """
+
+    def __init__(
+        self,
+        l0_channels,
+        l1_channels,
+        out_channels,
+    ):
+        super(GatedEquivariantBlock, self).__init__()
+        self.l0_channels = l0_channels
+        self.l1_channels = l1_channels
+        self.out_channels = out_channels
+
+        self.vec1_proj = torch.nn.Linear(l1_channels, l1_channels, bias=False)
+        self.vec2_proj = torch.nn.Linear(l1_channels, out_channels, bias=False)
+
+        self.update_net = torch.nn.Sequential(
+            torch.nn.Linear(
+                l0_channels + l1_channels,
+                l1_channels,
+            ),
+            torch.nn.SiLU(),
+            torch.nn.Linear(l1_channels, out_channels * 2),
+        )
+
+        self.act = torch.nn.SiLU()
+
+    def reset_parameters(self):
+        torch.nn.init.xavier_uniform_(self.vec1_proj.weight)
+        torch.nn.init.xavier_uniform_(self.vec2_proj.weight)
+        torch.nn.init.xavier_uniform_(self.update_net[0].weight)
+        self.update_net[0].bias.data.fill_(0)
+        torch.nn.init.xavier_uniform_(self.update_net[2].weight)
+        self.update_net[2].bias.data.fill_(0)
+
+    def forward(self, x, v):
+        # x is [num_nodes x l0_hidden_channels]
+        # v is [num_nodes x 3 x l1_hidden_channels]
+        vec1 = torch.norm(self.vec1_proj(v), dim=-2)
+        vec2 = self.vec2_proj(v)
+
+        x = torch.cat([x, vec1], dim=-1)
+        x, v = torch.split(self.update_net(x), self.out_channels, dim=-1)
+        v = v.unsqueeze(1) * vec2
+
+        x = self.act(x)
+        return x, v
