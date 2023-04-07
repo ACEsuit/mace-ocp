@@ -2,7 +2,12 @@ import torch
 import torch.optim as optim
 
 from ocpmodels.common.registry import registry
-from ocpmodels.modules.loss import DDPLoss, MSELossForces, PerAtomMSELossEnergy
+from ocpmodels.modules.loss import (
+    DDPLoss,
+    L2MAELoss,
+    MSELossForces,
+    PerAtomMSELossEnergy,
+)
 from ocpmodels.trainers import ForcesTrainer
 
 
@@ -89,6 +94,62 @@ class MACETrainer(ForcesTrainer):
         loss.append(
             energy_mult
             * self.loss_fn["energy"](out["energy"], energy_target, natoms)
+        )
+
+        # Force loss.
+        force_target = torch.cat(
+            [batch.force.to(self.device) for batch in batch_list], dim=0
+        )
+        if self.normalizer.get("normalize_labels", False):
+            force_target = self.normalizers["grad_target"].norm(force_target)
+
+        force_mult = self.config["optim"].get("force_coefficient", 100)
+
+        if self.config["task"].get("train_on_free_atoms", False):
+            fixed = torch.cat(
+                [batch.fixed.to(self.device) for batch in batch_list]
+            )
+            mask = fixed == 0
+            loss.append(
+                force_mult
+                * self.loss_fn["force"](
+                    out["forces"][mask], force_target[mask]
+                )
+            )
+        else:
+            loss.append(
+                force_mult * self.loss_fn["force"](out["forces"], force_target)
+            )
+
+        # Sanity check to make sure the compute graph is correct.
+        for lc in loss:
+            assert hasattr(lc, "grad_fn")
+
+        loss = sum(loss)
+        return loss
+
+
+@registry.register_trainer("interaction_mace_trainer")
+class InteractionMACETrainer(MACETrainer):
+    def load_loss(self):
+        self.loss_fn = {}
+        self.loss_fn["energy"] = DDPLoss(torch.nn.L1Loss())
+        self.loss_fn["force"] = DDPLoss(L2MAELoss())
+
+    def _compute_loss(self, out, batch_list):
+        assert self.config["model_attributes"].get("regress_forces", False)
+
+        loss = []
+
+        # Energy loss.
+        energy_target = torch.cat(
+            [batch.y.to(self.device) for batch in batch_list], dim=0
+        )
+        if self.normalizer.get("normalize_labels", False):
+            energy_target = self.normalizers["target"].norm(energy_target)
+        energy_mult = self.config["optim"].get("energy_coefficient", 1)
+        loss.append(
+            energy_mult * self.loss_fn["energy"](out["energy"], energy_target)
         )
 
         # Force loss.

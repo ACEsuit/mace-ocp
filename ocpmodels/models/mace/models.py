@@ -475,6 +475,151 @@ class ScaleShiftMACE(MACE):
         return total_e, forces
 
 
+@registry.register_model("interaction_energy_mace")
+class InteractionEnergyMACE(MACE):
+    def __init__(
+        self,
+        # Unused legacy OCP params.
+        num_atoms: Optional[int],
+        bond_feat_dim: int,
+        num_targets: int,
+        #
+        r_max: float,
+        num_bessel: int,
+        num_polynomial_cutoff: int,
+        max_ell: int,
+        num_interactions: int,
+        num_elements: int,
+        hidden_irreps: str,
+        MLP_irreps: str,
+        avg_num_neighbors: float,
+        correlation: int,
+        # Defaults from OCP / https://github.com/ACEsuit/mace/blob/main/scripts/run_train.py
+        gate=torch.nn.functional.silu,
+        atomic_energies=str,
+        interaction_cls=RealAgnosticResidualInteractionBlock,
+        interaction_cls_first=RealAgnosticResidualInteractionBlock,
+        max_neighbors: int = 500,
+        otf_graph: bool = True,
+        use_pbc: bool = True,
+        regress_forces: bool = True,
+        # support for gaussian basis.
+        rbf: str = "bessel",
+        num_rbf: int = 8,
+        rbf_hidden_channels: int = 64,
+        # support for direct forces.
+        direct_forces: bool = False,
+    ):
+        super().__init__(
+            num_atoms,
+            bond_feat_dim,
+            num_targets,
+            #
+            r_max,
+            num_bessel,
+            num_polynomial_cutoff,
+            max_ell,
+            num_interactions,
+            num_elements,
+            hidden_irreps,
+            MLP_irreps,
+            avg_num_neighbors,
+            correlation,
+            gate,
+            atomic_energies,
+            interaction_cls,
+            interaction_cls_first,
+            max_neighbors,
+            otf_graph,
+            use_pbc,
+            regress_forces,
+            rbf=rbf,
+            num_rbf=num_rbf,
+            rbf_hidden_channels=rbf_hidden_channels,
+            direct_forces=direct_forces,
+        )
+        if self.direct_forces:
+            self.force_readout = ForceBlock(o3.Irreps(hidden_irreps))
+
+    @conditional_grad(torch.enable_grad())
+    def forward(self, data):
+        # TODO(@abhshkdz): Fit linear references per element from training data.
+        # These are currently initialized to 0.0.
+
+        # OCP prepro boilerplate.
+        pos = data.pos
+        atomic_numbers = data.atomic_numbers.long()
+
+        # MACE computes forces via gradients.
+        pos.requires_grad_(True)
+
+        (
+            edge_index,
+            D_st,
+            distance_vec,
+            _,
+            _,
+            _,
+        ) = self.generate_graph(data)
+
+        vectors = -distance_vec
+        lengths = D_st.view(-1, 1)
+        ### OCP prepro ends.
+
+        # Comment(@abhshkdz): `data.node_attrs` is a 1-hot vector for each
+        # atomic number. `self.atomic_energies_fn` just matmuls the 1-hot
+        # vectors with the list of energies per atomic number, returning the
+        # energy per element.
+        atomic_numbers_1hot = self.atomic_numbers_to_compressed_one_hot(
+            atomic_numbers
+        )
+
+        # Embeddings
+        node_feats = self.node_embedding(atomic_numbers_1hot)
+        edge_attrs = self.spherical_harmonics(vectors)
+        edge_feats = self.radial_embedding(lengths)
+
+        # Interactions
+        node_es_list = []
+        for interaction, product, readout in zip(
+            self.interactions, self.products, self.readouts
+        ):
+            node_feats, sc = interaction(
+                node_attrs=atomic_numbers_1hot,
+                node_feats=node_feats,
+                edge_attrs=edge_attrs,
+                edge_feats=edge_feats,
+                edge_index=edge_index,
+            )
+            node_feats = product(
+                node_feats=node_feats, sc=sc, node_attrs=atomic_numbers_1hot
+            )
+            node_es_list.append(
+                readout(node_feats).squeeze(-1)
+            )  # {[n_nodes, ], }
+
+        # Sum over interactions
+        node_inter_es = torch.sum(
+            torch.stack(node_es_list, dim=0), dim=0
+        )  # [n_nodes, ]
+
+        # Sum over nodes in graph
+        inter_e = scatter_sum(
+            src=node_inter_es,
+            index=data.batch,
+            dim=-1,
+            dim_size=data.num_graphs,
+        )  # [n_graphs,]
+
+        energy = inter_e
+
+        if self.direct_forces:
+            forces = self.force_readout(node_feats)
+            return energy, forces
+        else:
+            raise NotImplementedError
+
+
 class ForceBlock(torch.nn.Module):
     def __init__(self, hidden_irreps):
         super().__init__()
