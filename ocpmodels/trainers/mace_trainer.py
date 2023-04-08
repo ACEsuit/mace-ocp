@@ -1,6 +1,9 @@
+import logging
+
 import torch
 import torch.optim as optim
 
+from ocpmodels.common import distutils
 from ocpmodels.common.registry import registry
 from ocpmodels.modules.loss import (
     DDPLoss,
@@ -137,8 +140,6 @@ class InteractionMACETrainer(MACETrainer):
         self.loss_fn["force"] = DDPLoss(L2MAELoss())
 
     def _compute_loss(self, out, batch_list):
-        assert self.config["model_attributes"].get("regress_forces", False)
-
         loss = []
 
         # Energy loss.
@@ -153,29 +154,108 @@ class InteractionMACETrainer(MACETrainer):
         )
 
         # Force loss.
-        force_target = torch.cat(
-            [batch.force.to(self.device) for batch in batch_list], dim=0
-        )
-        if self.normalizer.get("normalize_labels", False):
-            force_target = self.normalizers["grad_target"].norm(force_target)
-
-        force_mult = self.config["optim"].get("force_coefficient", 100)
-
-        if self.config["task"].get("train_on_free_atoms", False):
-            fixed = torch.cat(
-                [batch.fixed.to(self.device) for batch in batch_list]
+        if self.config["model_attributes"].get("regress_forces", True):
+            force_target = torch.cat(
+                [batch.force.to(self.device) for batch in batch_list], dim=0
             )
-            mask = fixed == 0
-            loss.append(
-                force_mult
-                * self.loss_fn["force"](
-                    out["forces"][mask], force_target[mask]
+            if self.normalizer.get("normalize_labels", False):
+                force_target = self.normalizers["grad_target"].norm(
+                    force_target
                 )
+
+            tag_specific_weights = self.config["task"].get(
+                "tag_specific_weights", []
             )
-        else:
-            loss.append(
-                force_mult * self.loss_fn["force"](out["forces"], force_target)
-            )
+            if tag_specific_weights != []:
+                # handle tag specific weights as introduced in forcenet
+                assert len(tag_specific_weights) == 3
+
+                batch_tags = torch.cat(
+                    [
+                        batch.tags.float().to(self.device)
+                        for batch in batch_list
+                    ],
+                    dim=0,
+                )
+                weight = torch.zeros_like(batch_tags)
+                weight[batch_tags == 0] = tag_specific_weights[0]
+                weight[batch_tags == 1] = tag_specific_weights[1]
+                weight[batch_tags == 2] = tag_specific_weights[2]
+
+                if self.config["optim"].get("loss_force", "l2mae") == "l2mae":
+                    # zero out nans, if any
+                    found_nans_or_infs = not torch.all(
+                        out["forces"].isfinite()
+                    )
+                    if found_nans_or_infs is True:
+                        logging.warning("Found nans while computing loss")
+                        out["forces"] = torch.nan_to_num(
+                            out["forces"], nan=0.0
+                        )
+
+                    dists = torch.norm(
+                        out["forces"] - force_target, p=2, dim=-1
+                    )
+                    weighted_dists_sum = (dists * weight).sum()
+
+                    num_samples = out["forces"].shape[0]
+                    num_samples = distutils.all_reduce(
+                        num_samples, device=self.device
+                    )
+                    weighted_dists_sum = (
+                        weighted_dists_sum
+                        * distutils.get_world_size()
+                        / num_samples
+                    )
+
+                    force_mult = self.config["optim"].get(
+                        "force_coefficient", 30
+                    )
+                    loss.append(force_mult * weighted_dists_sum)
+                else:
+                    raise NotImplementedError
+            else:
+                # Force coefficient = 30 has been working well for us.
+                force_mult = self.config["optim"].get("force_coefficient", 30)
+                if self.config["task"].get("train_on_free_atoms", False):
+                    fixed = torch.cat(
+                        [batch.fixed.to(self.device) for batch in batch_list]
+                    )
+                    mask = fixed == 0
+                    if (
+                        self.config["optim"]
+                        .get("loss_force", "mae")
+                        .startswith("atomwise")
+                    ):
+                        force_mult = self.config["optim"].get(
+                            "force_coefficient", 1
+                        )
+                        natoms = torch.cat(
+                            [
+                                batch.natoms.to(self.device)
+                                for batch in batch_list
+                            ]
+                        )
+                        natoms = torch.repeat_interleave(natoms, natoms)
+                        force_loss = force_mult * self.loss_fn["force"](
+                            out["forces"][mask],
+                            force_target[mask],
+                            natoms=natoms[mask],
+                            batch_size=batch_list[0].natoms.shape[0],
+                        )
+                        loss.append(force_loss)
+                    else:
+                        loss.append(
+                            force_mult
+                            * self.loss_fn["force"](
+                                out["forces"][mask], force_target[mask]
+                            )
+                        )
+                else:
+                    loss.append(
+                        force_mult
+                        * self.loss_fn["force"](out["forces"], force_target)
+                    )
 
         # Sanity check to make sure the compute graph is correct.
         for lc in loss:
