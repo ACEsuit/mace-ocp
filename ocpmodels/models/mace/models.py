@@ -16,6 +16,7 @@ from .blocks import (
     NonLinearReadoutBlock,
     RadialEmbeddingBlock,
     ScaleShiftBlock,
+    SpeciesAgnosticInteractionBlock,
 )
 from .mace_core.blocks import (
     AgnosticInteractionBlock,
@@ -60,6 +61,8 @@ class MACE(BaseModel):
         num_rbf: int = 8,
         rbf_hidden_channels: int = 64,
         direct_forces: bool = False,
+        # support for species-agonstic contraction.
+        contraction_type: str = "v1",
     ):
         super().__init__()
         self.cutoff = self.r_max = r_max
@@ -158,6 +161,7 @@ class MACE(BaseModel):
             correlation=correlation,
             num_elements=num_elements,
             use_sc=use_sc_first,
+            contraction_type=contraction_type,
         )
         self.products = torch.nn.ModuleList([prod])
 
@@ -191,6 +195,7 @@ class MACE(BaseModel):
                 correlation=correlation,
                 num_elements=num_elements,
                 use_sc=True,
+                contraction_type=contraction_type,
             )
             self.products.append(prod)
             if i == num_interactions - 2:
@@ -498,8 +503,8 @@ class InteractionEnergyMACE(MACE):
         # Defaults from OCP / https://github.com/ACEsuit/mace/blob/main/scripts/run_train.py
         gate=torch.nn.functional.silu,
         atomic_energies=str,
-        interaction_cls=RealAgnosticResidualInteractionBlock,
-        interaction_cls_first=RealAgnosticResidualInteractionBlock,
+        interaction_cls: str = "RealAgnosticResidualInteractionBlock",
+        interaction_cls_first: str = "RealAgnosticResidualInteractionBlock",
         max_neighbors: int = 500,
         otf_graph: bool = True,
         use_pbc: bool = True,
@@ -510,6 +515,8 @@ class InteractionEnergyMACE(MACE):
         rbf_hidden_channels: int = 64,
         # support for direct forces.
         direct_forces: bool = False,
+        # support for species-agnostic contraction.
+        contraction_type: str = "v1",
     ):
         super().__init__(
             num_atoms,
@@ -528,8 +535,8 @@ class InteractionEnergyMACE(MACE):
             correlation,
             gate,
             atomic_energies,
-            interaction_cls,
-            interaction_cls_first,
+            eval(interaction_cls),
+            eval(interaction_cls_first),
             max_neighbors,
             otf_graph,
             use_pbc,
@@ -538,6 +545,7 @@ class InteractionEnergyMACE(MACE):
             num_rbf=num_rbf,
             rbf_hidden_channels=rbf_hidden_channels,
             direct_forces=direct_forces,
+            contraction_type=contraction_type,
         )
         if self.direct_forces:
             self.force_readout = ForceBlock(o3.Irreps(hidden_irreps))
