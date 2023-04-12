@@ -374,3 +374,101 @@ class ScaleShiftBlock(torch.nn.Module):
 
     def __repr__(self):
         return f"{self.__class__.__name__}(scale={self.scale:.6f}, shift={self.shift:.6f})"
+
+
+class ForceBlock(torch.nn.Module):
+    def __init__(self, hidden_irreps):
+        super().__init__()
+
+        # TODO(@abhshkdz): is this assertion needed?
+        self.hidden_irreps = hidden_irreps
+        assert hidden_irreps[0].dim * 3 == hidden_irreps[1].dim
+
+        l0_h = hidden_irreps[0].mul
+        l1_h = hidden_irreps[1].mul
+
+        self.output_network = torch.nn.ModuleList(
+            [
+                GatedEquivariantBlock(l0_h, l1_h, l1_h // 2),
+                GatedEquivariantBlock(l1_h // 2, l1_h // 2, 1),
+            ]
+        )
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for layer in self.output_network:
+            layer.reset_parameters()
+
+    def forward(self, node_feats):
+        # split node_feats into scalar and vector components.
+        x = node_feats[:, : self.hidden_irreps[0].dim]
+        vec = node_feats[
+            :,
+            self.hidden_irreps[0].dim : self.hidden_irreps[0].dim
+            + self.hidden_irreps[1].dim,
+        ]
+
+        vec = vec.reshape(vec.shape[0], self.hidden_irreps[1].mul, 3)
+        vec = vec.transpose(1, 2)
+
+        # pass it through the gated equivariant blocks.
+        for layer in self.output_network:
+            x, vec = layer(x, vec)
+
+        # return the vector components.
+        return vec.squeeze()
+
+
+# Implementation based on TorchMD-Net
+# https://github.com/Open-Catalyst-Project/ocp/blob/main/ocpmodels/models/painn/painn.py#L607
+class GatedEquivariantBlock(torch.nn.Module):
+    """Gated Equivariant Block as defined in Schütt et al. (2021):
+    Equivariant message passing for the prediction of tensorial properties and molecular spectra
+    """
+
+    def __init__(
+        self,
+        l0_channels,
+        l1_channels,
+        out_channels,
+    ):
+        super(GatedEquivariantBlock, self).__init__()
+        self.l0_channels = l0_channels
+        self.l1_channels = l1_channels
+        self.out_channels = out_channels
+
+        self.vec1_proj = torch.nn.Linear(l1_channels, l1_channels, bias=False)
+        self.vec2_proj = torch.nn.Linear(l1_channels, out_channels, bias=False)
+
+        self.update_net = torch.nn.Sequential(
+            torch.nn.Linear(
+                l0_channels + l1_channels,
+                l1_channels,
+            ),
+            torch.nn.SiLU(),
+            torch.nn.Linear(l1_channels, out_channels * 2),
+        )
+
+        self.act = torch.nn.SiLU()
+
+    def reset_parameters(self):
+        torch.nn.init.xavier_uniform_(self.vec1_proj.weight)
+        torch.nn.init.xavier_uniform_(self.vec2_proj.weight)
+        torch.nn.init.xavier_uniform_(self.update_net[0].weight)
+        self.update_net[0].bias.data.fill_(0)
+        torch.nn.init.xavier_uniform_(self.update_net[2].weight)
+        self.update_net[2].bias.data.fill_(0)
+
+    def forward(self, x, v):
+        # x is [num_nodes x l0_hidden_channels]
+        # v is [num_nodes x 3 x l1_hidden_channels]
+        vec1 = torch.norm(self.vec1_proj(v), dim=-2)
+        vec2 = self.vec2_proj(v)
+
+        x = torch.cat([x, vec1], dim=-1)
+        x, v = torch.split(self.update_net(x), self.out_channels, dim=-1)
+        v = v.unsqueeze(1) * vec2
+
+        x = self.act(x)
+        return x, v
