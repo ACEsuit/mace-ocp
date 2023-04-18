@@ -16,7 +16,7 @@ from .blocks import (
     NonLinearReadoutBlock,
     RadialEmbeddingBlock,
     ScaleShiftBlock,
-    SpeciesAgnosticInteractionBlock,
+    SpeciesAgnosticResidualInteractionBlock,
 )
 from .mace_core.blocks import (
     AgnosticInteractionBlock,

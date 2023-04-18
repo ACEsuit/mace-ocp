@@ -476,7 +476,7 @@ class GatedEquivariantBlock(torch.nn.Module):
 
 
 @compile_mode("script")
-class SpeciesAgnosticInteractionBlock(InteractionBlock):
+class SpeciesAgnosticResidualInteractionBlock(InteractionBlock):
     def _setup(self) -> None:
         # First linear
         self.linear_up = o3.Linear(
@@ -521,6 +521,11 @@ class SpeciesAgnosticInteractionBlock(InteractionBlock):
 
         self.reshape = reshape_irreps(self.irreps_out)
 
+        # Skip connection.
+        self.skip_linear = o3.Linear(
+            self.node_feats_irreps, self.hidden_irreps
+        )
+
     def forward(
         self,
         node_attrs: torch.Tensor,
@@ -532,6 +537,7 @@ class SpeciesAgnosticInteractionBlock(InteractionBlock):
         sender = edge_index[0]
         receiver = edge_index[1]
         num_nodes = node_feats.shape[0]
+        sc = self.skip_linear(node_feats)
         node_feats = self.linear_up(node_feats)
         tp_weights = self.conv_tp_weights(edge_feats)
         mji = self.conv_tp(
@@ -543,5 +549,5 @@ class SpeciesAgnosticInteractionBlock(InteractionBlock):
         message = self.linear(message) / self.avg_num_neighbors
         return (
             self.reshape(message),
-            None,
+            sc,
         )  # [n_nodes, channels, (lmax + 1)**2]
