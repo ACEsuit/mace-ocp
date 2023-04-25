@@ -501,7 +501,16 @@ class SpeciesAgnosticResidualInteractionBlock(InteractionBlock):
         )
 
         # Convolution weights
-        input_dim = self.edge_feats_irreps.num_irreps
+        self.linear_down = o3.Linear(
+            self.node_feats_irreps,
+            self.node_feats_down_irreps,
+            internal_weights=True,
+            shared_weights=True,
+        )
+        input_dim = (
+            self.edge_feats_irreps.num_irreps
+            + 2 * self.node_feats_down_irreps.num_irreps
+        )
         self.conv_tp_weights = nn.FullyConnectedNet(
             [input_dim]
             + 3 * [self.rbf_hidden_channels]
@@ -538,10 +547,19 @@ class SpeciesAgnosticResidualInteractionBlock(InteractionBlock):
         receiver = edge_index[1]
         num_nodes = node_feats.shape[0]
         sc = self.skip_linear(node_feats)
-        node_feats = self.linear_up(node_feats)
-        tp_weights = self.conv_tp_weights(edge_feats)
+        node_feats_up = self.linear_up(node_feats)
+        node_feats_down = self.linear_down(node_feats)
+        augmented_edge_feats = torch.cat(
+            [
+                edge_feats,
+                node_feats_down[sender],
+                node_feats_down[receiver],
+            ],
+            dim=-1,
+        )
+        tp_weights = self.conv_tp_weights(augmented_edge_feats)
         mji = self.conv_tp(
-            node_feats[sender], edge_attrs, tp_weights
+            node_feats_up[sender], edge_attrs, tp_weights
         )  # [n_edges, irreps]
         message = scatter_sum(
             src=mji, index=receiver, dim=0, dim_size=num_nodes
