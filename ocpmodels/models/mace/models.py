@@ -15,6 +15,7 @@ from .blocks import (
     LinearReadoutBlock,
     NonLinearReadoutBlock,
     RadialEmbeddingBlock,
+    RealAgnosticResidualInteractionBlockV2,
     ScaleShiftBlock,
     SpeciesAgnosticResidualInteractionBlock,
 )
