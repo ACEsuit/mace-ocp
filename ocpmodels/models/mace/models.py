@@ -63,6 +63,8 @@ class MACE(BaseModel):
         direct_forces: bool = False,
         # support for species-agonstic contraction.
         contraction_type: str = "v1",
+        # source and target feature size when concatenating for edge conv.
+        node_feats_down_irreps: str = "64x0e",
     ):
         super().__init__()
         self.cutoff = self.r_max = r_max
@@ -146,6 +148,7 @@ class MACE(BaseModel):
             # this ~fixed statistic for OC20, or compute this value on-the-fly.
             avg_num_neighbors=avg_num_neighbors,
             rbf_hidden_channels=rbf_hidden_channels,
+            node_feats_down_irreps=o3.Irreps(node_feats_down_irreps),
         )
         self.interactions = torch.nn.ModuleList([inter])
 
@@ -187,6 +190,7 @@ class MACE(BaseModel):
                 hidden_irreps=hidden_irreps_out,
                 avg_num_neighbors=avg_num_neighbors,
                 rbf_hidden_channels=rbf_hidden_channels,
+                node_feats_down_irreps=o3.Irreps(node_feats_down_irreps),
             )
             self.interactions.append(inter)
             prod = EquivariantProductBasisBlock(
@@ -517,6 +521,8 @@ class InteractionEnergyMACE(MACE):
         direct_forces: bool = False,
         # support for species-agnostic contraction.
         contraction_type: str = "v1",
+        # source and target feature size when concatenating for edge conv.
+        node_feats_down_irreps: str = "64x0e",
     ):
         super().__init__(
             num_atoms,
@@ -546,6 +552,7 @@ class InteractionEnergyMACE(MACE):
             rbf_hidden_channels=rbf_hidden_channels,
             direct_forces=direct_forces,
             contraction_type=contraction_type,
+            node_feats_down_irreps=node_feats_down_irreps,
         )
         if self.direct_forces:
             self.force_readout = ForceBlock(o3.Irreps(hidden_irreps))
