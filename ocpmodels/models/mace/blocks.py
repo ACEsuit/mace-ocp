@@ -12,6 +12,7 @@ from .mace_core.irreps_tools import (
     linear_out_irreps,
     reshape_irreps,
     tp_out_irreps_with_instructions,
+    lifted_skip,
 )
 from .mace_core.scatter import scatter_sum
 from .mace_core.symmetric_contraction import SymmetricContraction
@@ -665,3 +666,177 @@ class RealAgnosticResidualInteractionBlockV2(InteractionBlock):
             self.reshape(message),
             sc,
         )  # [n_nodes, channels, (lmax + 1)**2]
+
+
+@compile_mode("script")
+class IdentityResidualInteractionBlock(InteractionBlock):
+    def _setup(self) -> None:
+        # First linear
+        self.linear_up = o3.Linear(
+            self.node_feats_irreps,
+            self.node_feats_irreps,
+            internal_weights=True,
+            shared_weights=True,
+        )
+        # TensorProduct
+        irreps_mid, instructions = tp_out_irreps_with_instructions(
+            self.node_feats_irreps,
+            self.edge_attrs_irreps,
+            self.target_irreps,
+        )
+        self.conv_tp = o3.TensorProduct(
+            self.node_feats_irreps,
+            self.edge_attrs_irreps,
+            irreps_mid,
+            instructions=instructions,
+            shared_weights=False,
+            internal_weights=False,
+        )
+
+        # Convolution weights
+        input_dim = self.edge_feats_irreps.num_irreps
+        self.conv_tp_weights = nn.FullyConnectedNet(
+            [input_dim] + 3 * [self.rbf_hidden_channels] + [self.conv_tp.weight_numel],
+            torch.nn.functional.silu,
+        )
+
+        # Linear
+        irreps_mid = irreps_mid.simplify()
+        self.irreps_out = self.target_irreps
+        self.linear = o3.Linear(
+            irreps_mid, self.irreps_out, internal_weights=True, shared_weights=True
+        )
+        
+        self.skip = lifted_skip(self.node_feats_irreps, self.hidden_irreps)
+        self.reshape = reshape_irreps(self.irreps_out)
+
+    def forward(
+        self,
+        node_attrs: torch.Tensor,
+        node_feats: torch.Tensor,
+        edge_attrs: torch.Tensor,
+        edge_feats: torch.Tensor,
+        edge_index: torch.Tensor,
+    ) -> Tuple[torch.Tensor, None]:
+        sender = edge_index[0]
+        receiver = edge_index[1]
+        num_nodes = node_feats.shape[0]
+        sc = self.skip(node_feats)
+        node_feats = self.linear_up(node_feats)
+        tp_weights = self.conv_tp_weights(edge_feats)
+        mji = self.conv_tp(
+            node_feats[sender], edge_attrs, tp_weights
+        )  # [n_edges, irreps]
+        message = scatter_sum(
+            src=mji, index=receiver, dim=0, dim_size=num_nodes
+        )  # [n_nodes, irreps]
+        message = self.linear(message) / self.avg_num_neighbors
+        return (
+            self.reshape(message),
+            sc,
+        )  # [n_nodes, channels, (lmax + 1)**2]
+
+
+@compile_mode("script")
+class EdgeGatedInteractionBlock(InteractionBlock):
+    def _setup(self) -> None:
+
+        # First linear
+        self.linear = o3.Linear(self.node_feats_irreps, self.node_feats_irreps)
+        # TensorProduct
+        irreps_mid, instructions = tp_out_irreps_with_instructions(
+            self.node_feats_irreps,
+            self.edge_attrs_irreps,
+            self.target_irreps,
+        )
+        self.conv_tp = o3.TensorProduct(
+            self.node_feats_irreps,
+            self.edge_attrs_irreps,
+            irreps_mid,
+            instructions=instructions,
+            shared_weights=False,
+            internal_weights=False,
+        )
+        irreps_mid = irreps_mid.simplify()
+        self.message_dim = irreps_mid.dim
+        self.irreps_out = self.target_irreps
+
+        # Convolution weights
+        self.num_convs = self.num_gates if self.multi_conv else 1
+        input_dim = self.edge_feats_irreps.num_irreps
+        self.conv_tp_weights = nn.FullyConnectedNet(
+            [input_dim] + 3 * [self.rbf_hidden_channels] + [self.conv_tp.weight_numel * self.num_convs],
+            torch.nn.functional.silu,
+        )
+
+        # Edge gating operations
+        if self.exponential:
+            self.scale = nn.FullyConnectedNet(
+                [self.edge_gates_irreps.dim] + 3 * [self.rbf_hidden_channels] + [1],
+                torch.nn.functional.silu,
+            )
+        self.alpha = o3.Linear(self.node_feats_irreps,  self.edge_gates_irreps)
+        self.gamma = o3.Linear(irreps_mid * self.num_convs, self.edge_gates_irreps)
+        self.mix = o3.FullyConnectedTensorProduct(
+            self.edge_gates_irreps, self.edge_gates_irreps, f"{self.num_gates}x0e"
+        )
+        self.project = o3.Linear(irreps_mid * self.num_gates, self.irreps_out)
+
+        self.skip = lifted_skip(self.node_feats_irreps, self.hidden_irreps)
+        self.reshape = reshape_irreps(self.irreps_out)
+
+    def forward(
+        self,
+        node_attrs: torch.Tensor,
+        node_feats: torch.Tensor,
+        edge_attrs: torch.Tensor,
+        edge_feats: torch.Tensor,
+        edge_index: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        sender = edge_index[0]
+        receiver = edge_index[1]
+        num_nodes = node_feats.shape[0]
+        num_edges = edge_feats.shape[0]
+        sc = self.skip(node_feats)
+        node_feats = self.linear(node_feats)
+
+        tp_weights = (
+            self.conv_tp_weights(edge_feats)
+                .reshape(
+                    num_edges,
+                    self.num_convs,
+                    self.conv_tp.weight_numel
+                )
+        )
+        
+        mji = self.conv_tp(
+            node_feats[sender][:,None,:], 
+            edge_attrs[:,None,:], 
+            tp_weights
+        )  # [n_edges, n_convs, irreps]
+
+        # Gate edges
+        alphas, gammas = (
+            self.alpha(node_feats[receiver]),
+            self.gamma(mji.reshape(num_edges, self.message_dim * self.num_convs)),
+        )
+        gate = self.mix(alphas, gammas) # [n_edges, n_gates]
+        if self.exponential:
+            local_scale = torch.nn.functional.softplus(
+                self.scale(alphas)
+            )
+            gate = (gate / local_scale).exp()
+        all_gate = scatter_sum(src=gate, index=receiver, dim=0, dim_size=num_nodes)
+        gate = torch.nan_to_num(gate / all_gate[receiver]).unsqueeze(-1) # [n_edges, n_gates, 1]
+
+        message = scatter_sum(
+            src=(gate * mji), index=receiver, dim=0, dim_size=num_nodes
+        ) # [n_nodes, n_gates, irreps]
+        
+        message = message.reshape(num_nodes, self.message_dim * self.num_gates) # [n_nodes, irreps * n_gates]
+        message = self.project(message) # [n_nodes, irreps_out]
+        return (
+            self.reshape(message),
+            sc,
+        )
+
