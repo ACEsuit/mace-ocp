@@ -18,6 +18,8 @@ from .blocks import (
     RealAgnosticResidualInteractionBlockV2,
     ScaleShiftBlock,
     SpeciesAgnosticResidualInteractionBlock,
+    IdentityResidualInteractionBlock,
+    EdgeGatedInteractionBlock,
 )
 from .mace_core.blocks import (
     AgnosticInteractionBlock,
@@ -66,6 +68,11 @@ class MACE(BaseModel):
         contraction_type: str = "v1",
         # source and target feature size when concatenating for edge conv.
         node_feats_down_irreps: str = "64x0e",
+        # parameters for edge gating.
+        edge_gates_irreps: o3.Irreps = o3.Irreps("0e"),
+        num_gates: int = 4,
+        multi_conv: bool = False,
+        exponential: bool = True,
     ):
         super().__init__()
         self.cutoff = self.r_max = r_max
@@ -150,6 +157,10 @@ class MACE(BaseModel):
             avg_num_neighbors=avg_num_neighbors,
             rbf_hidden_channels=rbf_hidden_channels,
             node_feats_down_irreps=o3.Irreps(node_feats_down_irreps),
+            edge_gates_irreps=edge_gates_irreps,
+            num_gates=num_gates,
+            multi_conv=multi_conv,
+            exponential=exponential,
         )
         self.interactions = torch.nn.ModuleList([inter])
 
@@ -192,6 +203,10 @@ class MACE(BaseModel):
                 avg_num_neighbors=avg_num_neighbors,
                 rbf_hidden_channels=rbf_hidden_channels,
                 node_feats_down_irreps=o3.Irreps(node_feats_down_irreps),
+                edge_gates_irreps=edge_gates_irreps,
+                num_gates=num_gates,
+                multi_conv=multi_conv,
+                exponential=exponential,
             )
             self.interactions.append(inter)
             prod = EquivariantProductBasisBlock(
