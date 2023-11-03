@@ -44,6 +44,8 @@ model:
   interaction_cls_first: SpeciesAgnosticResidualInteractionBlock
   interaction_cls: EdgeGatedInteractionBlock
   edge_gates_irreps: 128x0e
+  edge_gates_use_source_target_feats: True
+  node_feats_down_irreps: 64x0e
   contraction_type: v2
   # OCP flags.
   regress_forces: True

@@ -10,7 +10,9 @@ from ocpmodels.models.base import BaseModel
 
 from .blocks import (
     AtomicEnergiesBlock,
+    EdgeGatedInteractionBlock,
     ForceBlock,
+    IdentityResidualInteractionBlock,
     LinearNodeEmbeddingBlock,
     LinearReadoutBlock,
     NonLinearReadoutBlock,
@@ -18,8 +20,6 @@ from .blocks import (
     RealAgnosticResidualInteractionBlockV2,
     ScaleShiftBlock,
     SpeciesAgnosticResidualInteractionBlock,
-    IdentityResidualInteractionBlock,
-    EdgeGatedInteractionBlock,
 )
 from .mace_core.blocks import (
     AgnosticInteractionBlock,
@@ -69,10 +69,11 @@ class MACE(BaseModel):
         # source and target feature size when concatenating for edge conv.
         node_feats_down_irreps: str = "64x0e",
         # parameters for edge gating.
-        edge_gates_irreps: o3.Irreps = o3.Irreps("0e"),
+        edge_gates_irreps: str = "0e",
         num_gates: int = 4,
         multi_conv: bool = False,
         exponential: bool = True,
+        edge_gates_use_source_target_feats: bool = False,
     ):
         super().__init__()
         self.cutoff = self.r_max = r_max
@@ -118,6 +119,8 @@ class MACE(BaseModel):
             sh_irreps, normalize=True, normalization="component"
         )
 
+        edge_gates_irreps = o3.Irreps(edge_gates_irreps)
+
         # Node / e0 block
         # fmt: off
         if atomic_energies == "oc20tiny":
@@ -161,6 +164,7 @@ class MACE(BaseModel):
             num_gates=num_gates,
             multi_conv=multi_conv,
             exponential=exponential,
+            use_source_target_edge_feats=edge_gates_use_source_target_feats,
         )
         self.interactions = torch.nn.ModuleList([inter])
 
@@ -207,6 +211,7 @@ class MACE(BaseModel):
                 num_gates=num_gates,
                 multi_conv=multi_conv,
                 exponential=exponential,
+                use_source_target_edge_feats=edge_gates_use_source_target_feats,
             )
             self.interactions.append(inter)
             prod = EquivariantProductBasisBlock(
@@ -539,6 +544,12 @@ class InteractionEnergyMACE(MACE):
         contraction_type: str = "v1",
         # source and target feature size when concatenating for edge conv.
         node_feats_down_irreps: str = "64x0e",
+        # parameters for edge gating.
+        edge_gates_irreps: str = "0e",
+        num_gates: int = 4,
+        multi_conv: bool = False,
+        exponential: bool = True,
+        edge_gates_use_source_target_feats: bool = False,
     ):
         super().__init__(
             num_atoms,
@@ -569,6 +580,11 @@ class InteractionEnergyMACE(MACE):
             direct_forces=direct_forces,
             contraction_type=contraction_type,
             node_feats_down_irreps=node_feats_down_irreps,
+            edge_gates_irreps=edge_gates_irreps,
+            num_gates=num_gates,
+            multi_conv=multi_conv,
+            exponential=exponential,
+            edge_gates_use_source_target_feats=edge_gates_use_source_target_feats,
         )
         if self.direct_forces:
             self.force_readout = ForceBlock(o3.Irreps(hidden_irreps))
