@@ -38,7 +38,9 @@ class Evaluator:
             "forces_mae",
             "forces_cos",
             "forces_magnitude",
+            "forces_mse",
             "energy_mae",
+            "energy_per_atom_mse",
             "energy_force_within_threshold",
         ],
         "is2rs": [
@@ -114,6 +116,13 @@ def energy_mae(prediction, target):
 
 def energy_mse(prediction, target):
     return squared_error(prediction["energy"], target["energy"])
+
+
+def energy_per_atom_mse(prediction, target):
+    return squared_error(
+        prediction["energy"] / prediction["natoms"],
+        target["energy"] / target["natoms"]
+    )
 
 
 def forcesx_mae(prediction, target):

@@ -13,6 +13,8 @@ import random
 import warnings
 from pathlib import Path
 
+import ase.neighborlist
+
 import lmdb
 import numpy as np
 import torch
@@ -183,6 +185,34 @@ class OC22LmdbDataset(Dataset):
             del data_object.cell_offsets
         if "distances" in data_object:
             del data_object.distances
+
+        if self.config.get("ase_nbrlist", False):
+            sender, receiver, unit_shifts = ase.neighborlist.primitive_neighbor_list(
+                quantities="ijS",
+                pbc=(True, True, True),
+                cell=data_object.cell[0].numpy(),
+                positions=data_object.pos.numpy(),
+                cutoff=self.config.get("ase_cutoff", 6.0),
+                self_interaction=True,  # we want edges from atom to itself in different periodic images
+                use_scaled_positions=False,  # positions are not scaled positions
+            )
+
+            # Eliminate self-edges that don't cross periodic boundaries
+            true_self_edge = sender == receiver
+            true_self_edge &= np.all(unit_shifts == 0, axis=1)
+            keep_edge = ~true_self_edge
+
+            # Note: after eliminating self-edges, it can be that no edges remain in this system
+            sender = sender[keep_edge]
+            receiver = receiver[keep_edge]
+            unit_shifts = unit_shifts[keep_edge]
+
+            data_object.edge_index = torch.from_numpy(np.stack((sender, receiver)))  # [2, n_edges]
+            data_object.unit_shifts = torch.from_numpy(unit_shifts)
+
+            # From the docs: With the shift vector S, the distances D between atoms can be computed from
+            # D = positions[j]-positions[i]+S.dot(cell)
+            data_object.shifts = torch.from_numpy(np.dot(unit_shifts, data_object.cell[0])).to(torch.float32)  # [n_edges, 3]
 
         return data_object
 

@@ -1,0 +1,85 @@
+trainer: interaction_mace_trainer
+
+logger: wandb
+
+task:
+  dataset: lmdb  # for training on total energies.
+  primary_metric: forces_mae
+  train_on_free_atoms: True
+  eval_on_free_atoms: True
+  # OCP MACE models have "z2idx", which is missing in official MACE models.
+  # Official MACE models have "atomic_numbers", "r_max", "num_interactions",
+  # which are missing in OCP MACE models. Hence we set strict_load = False.
+  strict_load: False
+
+dataset:
+  train:
+    src: /datasets01/open_catalyst/oc20/082422/struct_to_energy_forces/train/2M
+    normalize_labels: True
+    target_mean: -0.7554450631141663
+    target_std: 2.887317180633545
+    grad_target_mean: 0.0
+    grad_target_std: 2.887317180633545
+  val:
+    src: /datasets01/open_catalyst/oc20/082422/struct_to_energy_forces/val/id_30k
+
+model:
+  name: interaction_energy_mace
+  r_max: 12.0
+  max_neighbors: 30
+  avg_num_neighbors: 30
+  rbf: gaussian
+  num_rbf: 128
+  rbf_hidden_channels: 256
+  num_bessel: -1  # unused, but required.
+  num_polynomial_cutoff: 5
+  max_ell: 3
+  num_interactions: 2
+  num_elements: 56
+  hidden_irreps: 512x0e + 512x1o + 512x2e
+  MLP_irreps: 128x0e
+  correlation: 3
+  # atomic_energies: ref energy per atomic number.
+  atomic_energies: oc20
+  interaction_cls_first: SpeciesAgnosticResidualInteractionBlock
+  interaction_cls: SpeciesAgnosticResidualInteractionBlock
+  contraction_type: v2
+  node_feats_down_irreps: 256x0e
+  # OCP flags.
+  regress_forces: True
+  otf_graph: True
+  use_pbc: True
+  direct_forces: True
+
+optim:
+  batch_size: 8
+  eval_batch_size: 8
+  load_balancing: atoms
+  eval_every: 2000
+  num_workers: 2
+  # default from (https://github.com/ACEsuit/mace/blob/main/mace/tools/arg_parser.py#L234)
+  lr_initial: 1.e-2
+  optimizer: AdamW
+  optimizer_params: {"amsgrad": True}
+  scheduler: ReduceLROnPlateau
+  mode: min
+  factor: 0.8
+  # In the MACE code, the RLROP scheduler is run every epoch even if validation loss is stale.
+  # https://github.com/ACEsuit/mace/blob/5470b632d839358faed4e9c97f67fece1b558962/mace/tools/train.py#L149
+  # In the OCP code, we step the scheduler only when validation loss is recomputed.
+  # https://github.com/ACEsuit/mace-ocp/blob/main/ocpmodels/trainers/forces_trainer.py#L412
+  # And so we should probably keep a lower patience. Using default from OCP for now.
+  patience: 3
+  max_epochs: 40
+  # TODO(@abhshkdz): implement the swa scheduler, i.e. switch to high energy coefficient and low force coefficient after loss plateaus with initial coefficients.
+  force_coefficient: 100
+  energy_coefficient: 1
+  # default from https://github.com/ACEsuit/mace/blob/main/mace/tools/arg_parser.py#L285
+  ema_decay: 0.99
+  # default from https://github.com/ACEsuit/mace/blob/main/mace/tools/arg_parser.py#L321
+  clip_grad_norm: 5
+  # default from https://github.com/ACEsuit/mace/blob/main/mace/tools/arg_parser.py#L240.
+  weight_decay: 5.e-7
+
+slurm:
+  constraint: "volta32gb"

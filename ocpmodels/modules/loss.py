@@ -6,12 +6,45 @@ from torch import nn
 from ocpmodels.common import distutils
 
 
-class L2MAELoss(nn.Module):
+class OCPLoss(nn.Module):
     def __init__(self, reduction="mean"):
         super().__init__()
         self.reduction = reduction
         assert reduction in ["mean", "sum"]
 
+    def forward(self, input: torch.Tensor, target: torch.Tensor):
+        raise NotImplementedError
+
+
+# Following `weighted_mean_squared_error_energy` from MACE
+# https://github.com/ACEsuit/mace/blob/main/mace/modules/loss.py#L18
+class PerAtomMSELossEnergy(OCPLoss):
+    def forward(
+        self,
+        input: torch.Tensor,
+        target: torch.Tensor,
+        natoms: torch.Tensor,
+    ):
+        dists = torch.square((target - input) / natoms)  # (nGraphs, )
+        if self.reduction == "mean":
+            return torch.mean(dists)
+        elif self.reduction == "sum":
+            return torch.sum(dists)
+
+
+# Following `mean_squared_error_forces` from MACE
+# https://github.com/ACEsuit/mace/blob/main/mace/modules/loss.py#L54
+class MSELossForces(OCPLoss):
+    def forward(self, input: torch.Tensor, target: torch.Tensor):
+        dists = torch.square(target - input)  # (nAtoms, 3)
+        dists = torch.mean(dists, dim=-1)  # (nAtoms, )
+        if self.reduction == "mean":
+            return torch.mean(dists)
+        elif self.reduction == "sum":
+            return torch.sum(dists)
+
+
+class L2MAELoss(OCPLoss):
     def forward(self, input: torch.Tensor, target: torch.Tensor):
         dists = torch.norm(input - target, p=2, dim=-1)
         if self.reduction == "mean":
@@ -20,12 +53,7 @@ class L2MAELoss(nn.Module):
             return torch.sum(dists)
 
 
-class AtomwiseL2Loss(nn.Module):
-    def __init__(self, reduction="mean"):
-        super().__init__()
-        self.reduction = reduction
-        assert reduction in ["mean", "sum"]
-
+class AtomwiseL2Loss(OCPLoss):
     def forward(
         self,
         input: torch.Tensor,
